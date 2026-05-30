@@ -1,0 +1,34 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Environment
+.env
+.env.*
+
+# Local tooling
+.claude/
+.cursor/
+
+# Data and outputs
+data/
+nyu_depth_v2/
+outputs/
+checkpoints/
+
+# Model artifacts
+models/
+*.pt
+*.pth
+*.ckpt
+*.h5
+*.onnx
+
+# Notebooks
+.ipynb_checkpoints/
