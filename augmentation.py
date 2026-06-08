@@ -14,10 +14,10 @@ def random_crop(x, y, crop_size=(192, 256)):
     assert x.shape[1] == y.shape[1]
     h, w, _ = x.shape
     crop_h, crop_w = crop_size
-    rangeh = h - crop_h if h > crop_h else 0
-    rangew = w - crop_w if w > crop_w else 0
-    offseth = 0 if rangeh == 0 else np.random.randint(rangeh + 1)
-    offsetw = 0 if rangew == 0 else np.random.randint(rangew + 1)
+    max_offseth = max(h - crop_h, 0)
+    max_offsetw = max(w - crop_w, 0)
+    offseth = 0 if max_offseth == 0 else np.random.randint(max_offseth + 1)
+    offsetw = 0 if max_offsetw == 0 else np.random.randint(max_offsetw + 1)
     cropped_x = x[offseth:offseth + crop_h, offsetw:offsetw + crop_w, :]
     cropped_y = y[offseth:offseth + crop_h, offsetw:offsetw + crop_w, :]
     cropped_y = cropped_y[:, :, ~np.all(cropped_y == 0, axis=(0, 1))]
@@ -30,8 +30,8 @@ def random_crop(x, y, crop_size=(192, 256)):
 def augmentation2D(img, depth, print_info_aug):
     # Random flipping
     if random.uniform(0, 1) <= augmentation_parameters['flip']:
-        img = (img[..., ::-1, :, :]).copy()
-        depth = (depth[..., ::-1, :, :]).copy()
+        img = (img[::-1, ...]).copy()
+        depth = (depth[::-1, ...]).copy()
         if print_info_aug:
             print('--> Random flipped')
     # Random mirroring
@@ -69,6 +69,6 @@ def augmentation2D(img, depth, print_info_aug):
         random_shift = random.randint(-10, 10)
         depth = pixel_shift(depth, shift=random_shift)
         if print_info_aug:
-            print('--> Depth Shifted of {} cm/dm and Image randomly augmented'.format(random_shift))
+            print('--> Depth Shifted of {} cm and Image randomly augmented'.format(random_shift))
 
     return img, depth

@@ -1,6 +1,8 @@
 RGB_img_res = (3, 192, 256)
 
 dts_type = "nyu"
+depth_unit = "cm"
+max_depth = 1000.0
 
 augmentation_parameters = {
     "flip": 0.5,

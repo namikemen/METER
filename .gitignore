@@ -12,10 +12,6 @@ venv/
 .env
 .env.*
 
-# Local tooling
-.claude/
-.cursor/
-
 # Data and outputs
 data/
 nyu_depth_v2/
@@ -23,7 +19,6 @@ outputs/
 checkpoints/
 
 # Model artifacts
-models/
 *.pt
 *.pth
 *.ckpt
@@ -32,3 +27,7 @@ models/
 
 # Notebooks
 .ipynb_checkpoints/
+
+.claude/
+.cursor/
+.models/

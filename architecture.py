@@ -5,17 +5,15 @@ from globals import RGB_img_res
 
 
 class SeparableConv2d(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size, device=None, stride=1, depth=1, bias=False):
+    def __init__(self, in_channels, out_channels, kernel_size, device, stride=1, depth=1, bias=False):
         super(SeparableConv2d, self).__init__()
-        self.depthwise = nn.Conv2d(in_channels, in_channels * depth,
+        self.depthwise = nn.Conv2d(in_channels, out_channels * depth,
                                    kernel_size=kernel_size,
-                                   groups=in_channels,
+                                   groups=depth,
                                    padding=1,
                                    stride=stride,
-                                   bias=bias)
-        self.pointwise = nn.Conv2d(in_channels * depth, out_channels, kernel_size=(1, 1), bias=bias)
-        if device is not None:
-            self.to(device)
+                                   bias=bias).to(device)
+        self.pointwise = nn.Conv2d(out_channels * depth, out_channels, kernel_size=(1, 1), bias=bias).to(device)
 
     def forward(self, x):
         out = self.depthwise(x)
@@ -31,10 +29,10 @@ def conv_1x1_bn(inp, oup):
     )
 
 
-def conv_nxn_bn(inp, oup, kernal_size=3, stride=1, device=None):
+def conv_nxn_bn(inp, oup, kernal_size=3, stride=1):
     return nn.Sequential(
         SeparableConv2d(in_channels=inp, out_channels=oup, kernel_size=kernal_size, stride=stride,
-                        bias=False, device=device),
+                        bias=False, device='cuda:0'),
         nn.BatchNorm2d(oup),
         nn.ReLU()
     )
@@ -65,8 +63,23 @@ class FeedForward(nn.Module):
         return self.net(x)
 
 
+class DropPath(nn.Module):
+    def __init__(self, drop_prob=0.):
+        super().__init__()
+        self.drop_prob = drop_prob
+
+    def forward(self, x):
+        if self.drop_prob == 0. or not self.training:
+            return x
+        keep_prob = 1. - self.drop_prob
+        shape = (x.shape[0],) + (1,) * (x.ndim - 1)
+        random_tensor = keep_prob + torch.rand(shape, dtype=x.dtype, device=x.device)
+        random_tensor.floor_()
+        return x.div(keep_prob) * random_tensor
+
+
 class Attention(nn.Module):
-    def __init__(self, dim, heads=8, dim_head=64, dropout=0.):
+    def __init__(self, dim, heads=8, dim_head=64, attention_dropout=0., projection_dropout=0.):
         super().__init__()
         inner_dim = dim_head * heads
         project_out = not (heads == 1 and dim_head == dim)
@@ -75,11 +88,13 @@ class Attention(nn.Module):
         self.scale = dim_head ** -0.5
 
         self.attend = nn.Softmax(dim=-1)
+        self.attn_drop = nn.Dropout(attention_dropout)
+        self.attn_drop.is_attention_dropout = True
         self.to_qkv = nn.Linear(dim, inner_dim * 3, bias=False)
 
         self.to_out = nn.Sequential(
             nn.Linear(inner_dim, dim),
-            nn.Dropout(dropout)
+            nn.Dropout(projection_dropout)
         ) if project_out else nn.Identity()
 
     def forward(self, x):
@@ -88,25 +103,28 @@ class Attention(nn.Module):
 
         dots = torch.matmul(q, k.transpose(-1, -2)) * self.scale
         attn = self.attend(dots)
+        attn = self.attn_drop(attn)
         out = torch.matmul(attn, v)
         out = rearrange(out, 'b p h n d -> b p n (h d)')
         return self.to_out(out)
 
 
 class Transformer(nn.Module):
-    def __init__(self, dim, depth, heads, dim_head, mlp_dim, dropout=0.):
+    def __init__(self, dim, depth, heads, dim_head, mlp_dim, dropout=0., attention_dropout=0., drop_path=0.):
         super().__init__()
         self.layers = nn.ModuleList([])
         for _ in range(depth):
             self.layers.append(nn.ModuleList([
-                PreNorm(dim, Attention(dim, heads, dim_head, dropout)),
-                PreNorm(dim, FeedForward(dim, mlp_dim, dropout))
+                PreNorm(dim, Attention(dim, heads, dim_head, attention_dropout, dropout)),
+                PreNorm(dim, FeedForward(dim, mlp_dim, dropout)),
+                DropPath(drop_path),
+                DropPath(drop_path),
             ]))
 
     def forward(self, x):
-        for attn, ff in self.layers:
-            x = attn(x) + x
-            x = ff(x) + x
+        for attn, ff, attn_drop_path, ff_drop_path in self.layers:
+            x = x + attn_drop_path(attn(x))
+            x = x + ff_drop_path(ff(x))
         return x
 
 
@@ -152,14 +170,14 @@ class MV2Block(nn.Module):
 
 
 class MobileViTBlock(nn.Module):
-    def __init__(self, dim, depth, channel, kernel_size, patch_size, mlp_dim, dropout=0.):
+    def __init__(self, dim, depth, channel, kernel_size, patch_size, mlp_dim, dropout=0., attention_dropout=0., drop_path=0.):
         super().__init__()
         self.ph, self.pw = patch_size
 
         self.conv1 = conv_nxn_bn(channel, channel, kernel_size)
         self.conv2 = conv_1x1_bn(channel, dim)
 
-        self.transformer = Transformer(dim, depth, 4, 8, mlp_dim, dropout) 
+        self.transformer = Transformer(dim, depth, 4, 8, mlp_dim, dropout, attention_dropout, drop_path)
 
         self.conv3 = conv_1x1_bn(dim, channel)
         self.conv4 = conv_nxn_bn(2 * channel, channel, kernel_size)
@@ -186,7 +204,7 @@ class MobileViTBlock(nn.Module):
 
 
 class MobileViT(nn.Module):
-    def __init__(self, image_size, dims, channels, expansion=4, kernel_size=3, patch_size=(2, 2)):
+    def __init__(self, image_size, dims, channels, expansion=4, kernel_size=3, patch_size=(2, 2), dropout=0., attention_dropout=0., drop_path=0.):
         super().__init__()
         ih, iw = image_size
         ph, pw = patch_size
@@ -206,9 +224,9 @@ class MobileViT(nn.Module):
         self.mv2.append(MV2Block(channels[7], channels[8], 2, expansion))
 
         self.mvit = nn.ModuleList([])
-        self.mvit.append(MobileViTBlock(dims[0], L[0], channels[5], kernel_size, patch_size, int(dims[0] * 2)))
-        self.mvit.append(MobileViTBlock(dims[1], L[1], channels[7], kernel_size, patch_size, int(dims[1] * 4)))
-        self.mvit.append(MobileViTBlock(dims[2], L[2], channels[9], kernel_size, patch_size, int(dims[2] * 4)))
+        self.mvit.append(MobileViTBlock(dims[0], L[0], channels[5], kernel_size, patch_size, int(dims[0] * 2), dropout, attention_dropout, drop_path))
+        self.mvit.append(MobileViTBlock(dims[1], L[1], channels[7], kernel_size, patch_size, int(dims[1] * 4), dropout, attention_dropout, drop_path))
+        self.mvit.append(MobileViTBlock(dims[2], L[2], channels[9], kernel_size, patch_size, int(dims[2] * 4), dropout, attention_dropout, drop_path))
 
         self.conv2 = conv_1x1_bn(channels[-2], channels[-1])
 
@@ -234,25 +252,25 @@ class MobileViT(nn.Module):
         return x, [y0, y1, y2, y3]
 
 
-def mobilevit_xxs():
+def mobilevit_xxs(dropout=0., attention_dropout=0., drop_path=0.):
     enc_type = 'xxs'
     dims = [64, 80, 96]
     channels = [16, 16, 24, 24, 48, 48, 64, 64, 80, 80, 160]  # 320
-    return MobileViT((RGB_img_res[1], RGB_img_res[2]), dims, channels, expansion=2), enc_type
+    return MobileViT((RGB_img_res[1], RGB_img_res[2]), dims, channels, expansion=2, dropout=dropout, attention_dropout=attention_dropout, drop_path=drop_path), enc_type
 
 
-def mobilevit_xs():
+def mobilevit_xs(dropout=0., attention_dropout=0., drop_path=0.):
     enc_type = 'xs'
     dims = [96, 120, 144]
     channels = [16, 32, 48, 48, 64, 64, 80, 80, 96, 96, 192] # 384
-    return MobileViT((RGB_img_res[1], RGB_img_res[2]), dims, channels), enc_type
+    return MobileViT((RGB_img_res[1], RGB_img_res[2]), dims, channels, dropout=dropout, attention_dropout=attention_dropout, drop_path=drop_path), enc_type
 
 
-def mobilevit_s():
+def mobilevit_s(dropout=0., attention_dropout=0., drop_path=0.):
     enc_type = 's'
     dims = [144, 192, 240]
     channels = [16, 32, 64, 64, 96, 96, 128, 128, 160, 160, 320]
-    return MobileViT((RGB_img_res[1], RGB_img_res[2]), dims, channels), enc_type
+    return MobileViT((RGB_img_res[1], RGB_img_res[2]), dims, channels, dropout=dropout, attention_dropout=attention_dropout, drop_path=drop_path), enc_type
 
 
 class UpSample_layer(nn.Module):
@@ -270,13 +288,10 @@ class UpSample_layer(nn.Module):
 
     def forward(self, x, enc_layer):
         x = self.conv2d_transpose(x)
-        if x.shape[-2:] != enc_layer.shape[-2:]:
-            enc_layer = torch.nn.functional.interpolate(
-                enc_layer,
-                size=x.shape[-2:],
-                mode='bilinear',
-                align_corners=False,
-            )
+        if x.shape[-1] != enc_layer.shape[-1]:
+            enc_layer = torch.nn.functional.pad(enc_layer, pad=(1, 0), mode='constant', value=0.0)
+        if x.shape[-1] != enc_layer.shape[-1]:
+            enc_layer = torch.nn.functional.pad(enc_layer, pad=(0, 1), mode='constant', value=0.0)
         x = torch.cat([x, enc_layer], dim=1)
         x = self.end_up_layer(x)
 
@@ -317,14 +332,14 @@ class decoder(nn.Module):
 
 
 class build_METER_model(nn.Module):
-    def __init__(self, device, arch_type):
+    def __init__(self, device, arch_type, dropout=0., attention_dropout=0., drop_path=0.):
         super(build_METER_model, self).__init__()
         if arch_type == 's':
-            self.encoder, enc_type = mobilevit_s()
+            self.encoder, enc_type = mobilevit_s(dropout, attention_dropout, drop_path)
         elif arch_type == 'xs':
-            self.encoder, enc_type = mobilevit_xs()
+            self.encoder, enc_type = mobilevit_xs(dropout, attention_dropout, drop_path)
         else:
-            self.encoder, enc_type = mobilevit_xxs()
+            self.encoder, enc_type = mobilevit_xxs(dropout, attention_dropout, drop_path)
         self.decoder = decoder(device=device, typ=enc_type)
 
     def forward(self, x):
