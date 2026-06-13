@@ -11,3 +11,6 @@ augmentation_parameters = {
     "random_crop": 0.5,
     "shifting_strategy": 0.5,
 }
+
+MAX_DEPTH_CM = 1000.0
+INVALID_DEPTH_THRESHOLD_CM = 1.0
